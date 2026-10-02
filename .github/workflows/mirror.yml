@@ -1,0 +1,73 @@
+name: mirror
+
+# Copies one dataset from its official host onto Hugging Face, one runner per sequence.
+# Already-uploaded sequences are skipped, so a failed or cancelled run can simply be re-run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Manifest name under datasets/ (e.g. m3dgr)"
+        required: true
+      only:
+        description: "Comma-separated sequence names (blank = all)"
+        required: false
+        default: ""
+
+# Nothing in here needs to write to this repo; HF_TOKEN is only exposed to the steps that upload
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      seqs: ${{ steps.plan.outputs.seqs }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -q pyyaml==6.0.3 huggingface_hub==0.36.0
+      - id: plan
+        env:
+          DATASET: ${{ inputs.dataset }}
+          ONLY: ${{ inputs.only }}
+        run: python3 mirror.py list "$DATASET" "$ONLY" >> "$GITHUB_OUTPUT"
+
+  mirror:
+    needs: plan
+    name: "${{ matrix.seq }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        seq: ${{ fromJSON(needs.plan.outputs.seqs) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost \
+            /usr/share/swift /usr/local/share/powershell /usr/local/.ghcup /usr/local/share/chromium
+          sudo docker image prune -af >/dev/null
+          sudo chmod 777 /mnt
+          df -h / /mnt
+      - run: |
+          pip install -q pyyaml==6.0.3 gdown==5.2.0 "huggingface_hub[hf_xet]==0.36.0"
+          sudo apt-get install -y -qq p7zip-full >/dev/null
+      - env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          DATASET: ${{ inputs.dataset }}
+          SEQ: ${{ matrix.seq }}
+        run: python3 mirror.py seq "$DATASET" "$SEQ"
+
+  card:
+    needs: mirror
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install -q pyyaml==6.0.3 huggingface_hub==0.36.0
+      - env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          DATASET: ${{ inputs.dataset }}
+        run: python3 mirror.py card "$DATASET"
