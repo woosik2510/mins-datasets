@@ -1,0 +1,27 @@
+title: TUM VI
+source: https://cvg.cit.tum.de/data/datasets/visual-inertial-dataset
+hf_repo: gladiator7737/tum-vi
+license: CC BY 4.0 (data), BSD-2-Clause (code). Attribution required.
+hf_license: cc-by-4.0
+notes: >-
+  These are the calibrated 512x512 bags (images are 16-bit). Ground truth is the 120 Hz motion capture on
+  /vrpn_client/raw_transform, already in the IMU frame. It covers the whole trajectory only for room*;
+  corridor, magistrale, outdoors and slides have it only at the start and end.
+bag_url: https://cdn3.vision.in.tum.de/tumvi/calibrated/512_16/dataset-{name}_512_16.bag
+gt_format: bag:/vrpn_client/raw_transform
+topics:
+  imu: /imu0 (200 Hz)
+  cameras: /cam0/image_raw, /cam1/image_raw (20 Hz, 16-bit)
+  ground truth: /vrpn_client/raw_transform (120 Hz)
+citation: |
+  @inproceedings{schubert2018vidataset,
+    author    = {Schubert, David and Goll, Thore and Demmel, Nikolaus and Usenko, Vladyslav and St{\"u}ckler, J{\"o}rg and Cremers, Daniel},
+    title     = {The TUM VI Benchmark for Evaluating Visual-Inertial Odometry},
+    booktitle = {IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+    year      = {2018}
+  }
+seqs: [room1, room2, room3, room4, room5, room6,
+       corridor1, corridor2, corridor3, corridor4, corridor5,
+       magistrale1, magistrale2, magistrale3, magistrale4, magistrale5, magistrale6,
+       outdoors1, outdoors2, outdoors3, outdoors4, outdoors5, outdoors6, outdoors7, outdoors8,
+       slides1, slides2, slides3]

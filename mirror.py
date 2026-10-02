@@ -14,7 +14,14 @@ api = HfApi()
 
 def manifest(name):
     with open(f"datasets/{name}.yaml") as f:
-        return yaml.safe_load(f)
+        m = yaml.safe_load(f)
+    # A sequence is either a bare name, filled in from the dataset-level url templates, or a dict of its own
+    m["seqs"] = [x if isinstance(x, dict) else {"name": x} for x in m["seqs"]]
+    for x in m["seqs"]:
+        for key in ("bag", "gt"):
+            if key not in x and f"{key}_url" in m:
+                x[key] = m[f"{key}_url"].format(name=x["name"])
+    return m
 
 
 def workdir():
@@ -84,6 +91,31 @@ def to_tum(src, dst, fmt):
     print(f"ground truth: {len(rows)} poses, scale {scale}", flush=True)
 
 
+def gt_from_bag(bag, topic, dst):
+    """Write the poses on one topic of the bag as TUM ground truth."""
+    from pathlib import Path
+    from rosbags.highlevel import AnyReader
+
+    n = 0
+    with AnyReader([Path(bag)]) as reader, open(dst, "w") as f:
+        f.write("# timestamp(s) tx ty tz qx qy qz qw\n")
+        conns = [c for c in reader.connections if c.topic == topic]
+        if not conns:
+            raise SystemExit(f"no topic {topic} in {bag}")
+        for conn, _, raw in reader.messages(connections=conns):
+            msg = reader.deserialize(raw, conn.msgtype)
+            stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+            if hasattr(msg, "transform"):  # TransformStamped
+                p, q = msg.transform.translation, msg.transform.rotation
+            elif hasattr(msg.pose, "pose"):  # Odometry, PoseWithCovarianceStamped
+                p, q = msg.pose.pose.position, msg.pose.pose.orientation
+            else:  # PoseStamped
+                p, q = msg.pose.position, msg.pose.orientation
+            f.write("%.9f %.9f %.9f %.9f %.9f %.9f %.9f %.9f\n" % (stamp, p.x, p.y, p.z, q.x, q.y, q.z, q.w))
+            n += 1
+    print(f"ground truth: {n} poses from {topic}", flush=True)
+
+
 def cmd_list(name, only=""):
     seqs = [s["name"] for s in manifest(name)["seqs"]]
     if only:
@@ -127,16 +159,20 @@ def cmd_seq(name, seq):
     else:
         os.replace(files[0], bag)
 
+    gt = os.path.join(d, f"{seq}.txt")
+    fmt = s.get("gt_format", m.get("gt_format", "tum"))
     gt_raw = os.path.join(d, "gt_raw")
-    if s.get("gt_in_archive"):
+    if fmt.startswith("bag:"):
+        gt_from_bag(bag, fmt[len("bag:"):], gt)
+    elif s.get("gt_in_archive"):
         hits = glob.glob(os.path.join(d, "**", s["gt_in_archive"]), recursive=True)
         if len(hits) != 1:
             raise SystemExit(f"expected one ground truth file in the archive, found {hits}")
         os.replace(hits[0], gt_raw)
     else:
         fetch(s["gt"], gt_raw)
-    gt = os.path.join(d, f"{seq}.txt")
-    to_tum(gt_raw, gt, s.get("gt_format", m.get("gt_format", "tum")))
+    if not fmt.startswith("bag:"):
+        to_tum(gt_raw, gt, fmt)
 
     size = os.path.getsize(bag)
     if size > 190e9:
