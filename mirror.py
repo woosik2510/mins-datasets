@@ -136,43 +136,46 @@ def cmd_seq(name, seq):
 
     d = os.path.join(workdir(), seq)
     os.makedirs(d, exist_ok=True)
-    # A bag may come as one file, as split parts to concatenate, or inside an archive
-    parts = s["bag"] if isinstance(s["bag"], list) else [s["bag"]]
-    files = []
-    for i, url in enumerate(parts):
-        dst = os.path.join(d, s.get("files", [None] * len(parts))[i] or f"part{i}" + os.path.splitext(url.split("?")[0])[1])
-        fetch(url, dst)
-        files.append(dst)
-    bag = os.path.join(d, f"{seq}.bag")
-    if s.get("archive"):
-        unpack(files[0], d)
-        hits = [p for p in glob.glob(os.path.join(d, "**", "*"), recursive=True) if fnmatch.fnmatch(os.path.basename(p), s.get("bag_in_archive", "*.bag"))]
-        if len(hits) != 1:
-            raise SystemExit(f"expected one bag in the archive, found {hits}")
-        os.replace(hits[0], bag)
-    elif len(files) > 1:
-        with open(bag, "wb") as out:
-            for p in files:
-                with open(p, "rb") as f:
-                    shutil.copyfileobj(f, out, 64 << 20)
-                os.remove(p)
+    bag, gt = os.path.join(d, f"{seq}.bag"), os.path.join(d, f"{seq}.txt")
+    if m.get("convert"):
+        # Raw-file datasets: a module named after the converter builds the bag and ground truth itself
+        __import__(m["convert"]).build(seq, d, fetch, unpack)
     else:
-        os.replace(files[0], bag)
+        # A bag may come as one file, as split parts to concatenate, or inside an archive
+        parts = s["bag"] if isinstance(s["bag"], list) else [s["bag"]]
+        files = []
+        for i, url in enumerate(parts):
+            dst = os.path.join(d, s.get("files", [None] * len(parts))[i] or f"part{i}" + os.path.splitext(url.split("?")[0])[1])
+            fetch(url, dst)
+            files.append(dst)
+        if s.get("archive"):
+            unpack(files[0], d)
+            hits = [p for p in glob.glob(os.path.join(d, "**", "*"), recursive=True) if fnmatch.fnmatch(os.path.basename(p), s.get("bag_in_archive", "*.bag"))]
+            if len(hits) != 1:
+                raise SystemExit(f"expected one bag in the archive, found {hits}")
+            os.replace(hits[0], bag)
+        elif len(files) > 1:
+            with open(bag, "wb") as out:
+                for p in files:
+                    with open(p, "rb") as f:
+                        shutil.copyfileobj(f, out, 64 << 20)
+                    os.remove(p)
+        else:
+            os.replace(files[0], bag)
 
-    gt = os.path.join(d, f"{seq}.txt")
-    fmt = s.get("gt_format", m.get("gt_format", "tum"))
-    gt_raw = os.path.join(d, "gt_raw")
-    if fmt.startswith("bag:"):
-        gt_from_bag(bag, fmt[len("bag:"):], gt)
-    elif s.get("gt_in_archive"):
-        hits = glob.glob(os.path.join(d, "**", s["gt_in_archive"]), recursive=True)
-        if len(hits) != 1:
-            raise SystemExit(f"expected one ground truth file in the archive, found {hits}")
-        os.replace(hits[0], gt_raw)
-    else:
-        fetch(s["gt"], gt_raw)
-    if not fmt.startswith("bag:"):
-        to_tum(gt_raw, gt, fmt)
+        fmt = s.get("gt_format", m.get("gt_format", "tum"))
+        gt_raw = os.path.join(d, "gt_raw")
+        if fmt.startswith("bag:"):
+            gt_from_bag(bag, fmt[len("bag:"):], gt)
+        elif s.get("gt_in_archive"):
+            hits = glob.glob(os.path.join(d, "**", s["gt_in_archive"]), recursive=True)
+            if len(hits) != 1:
+                raise SystemExit(f"expected one ground truth file in the archive, found {hits}")
+            os.replace(hits[0], gt_raw)
+        else:
+            fetch(s["gt"], gt_raw)
+        if not fmt.startswith("bag:"):
+            to_tum(gt_raw, gt, fmt)
 
     size = os.path.getsize(bag)
     if size > 190e9:
@@ -200,7 +203,7 @@ All credit belongs to the original authors; please cite them (below) if you use 
 
 **License:** {m['license']}
 
-Each sequence is `<seq>.bag` (ROS1, unchanged from the original) plus `<seq>.txt`, the ground truth
+Each sequence is `<seq>.bag` (ROS1, {m.get('bag_note', 'unchanged from the original')}) plus `<seq>.txt`, the ground truth
 rewritten as `timestamp(s) tx ty tz qx qy qz qw`. {m.get('notes', '')}
 
 ## Sequences
