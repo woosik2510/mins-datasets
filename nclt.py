@@ -121,14 +121,16 @@ def build(seq, d, fetch, unpack):
     gt_to_tum(os.path.join(d, "gt.csv"), os.path.join(d, f"{seq}.txt"))
     fetch(f"{BASE}/sensor_data/{seq}_sen.tar.gz", os.path.join(d, "sen.tar.gz"))
     unpack(os.path.join(d, "sen.tar.gz"), d)
-    vel = os.path.join(d, "vel.tar.gz")
-    fetch(f"{BASE}/velodyne_data/{seq}_vel.tar.gz", vel)
 
     sen = os.path.join(d, seq)
     small = sorted([*imu_msgs(sen), *gps_msgs(sen, "gps.csv", "/gps/fix"), *gps_msgs(sen, "gps_rtk.csv", "/gps_rtk/fix", "gps_rtk"), *wheel_msgs(sen)],
                    key=lambda m: m[0])
-    # velodyne_hits.bin is the first member, so --occurrence stops tar before it reads the per-scan files after it
-    tar = subprocess.Popen(["tar", "-xzOf", vel, "--occurrence=1", f"{seq}/velodyne_hits.bin"], stdout=subprocess.PIPE, bufsize=64 << 20)
+    # Stream the velodyne archive straight into the converter so it never lands on disk; the bag is the only
+    # big file. velodyne_hits.bin is the first member, so --occurrence stops before the per-scan files after it.
+    # ponytail: no resume mid-stream (a retry would splice bytes), a dropped connection fails the session; rerun it
+    curl = subprocess.Popen(["curl", "-fsL", f"{BASE}/velodyne_data/{seq}_vel.tar.gz"], stdout=subprocess.PIPE)
+    tar = subprocess.Popen(["tar", "-xzO", "--occurrence=1", f"{seq}/velodyne_hits.bin"], stdin=curl.stdout, stdout=subprocess.PIPE, bufsize=64 << 20)
+    curl.stdout.close()
     bag, counts, k = os.path.join(d, f"{seq}.bag"), {}, 0
     w = Writer(bag)
     w.set_compression(Writer.CompressionFormat.LZ4)
@@ -149,7 +151,16 @@ def build(seq, d, fetch, unpack):
             put(t, "/velodyne_points", PC2, msg)
         for m in small[k:]:
             put(*m)
+    # curl exits 23 when tar stops reading early; that is fine as long as tar got the whole member
     if tar.wait() != 0:
-        raise SystemExit("tar failed reading velodyne_hits.bin")
-    os.remove(vel)
+        raise SystemExit("tar failed reading velodyne_hits.bin (download dropped?)")
+    curl.wait()
     print(f"{seq}: {counts}", flush=True)
+
+
+if __name__ == "__main__":
+    # Standalone, for CI that converts on the fly: python nclt.py <session> <out dir>
+    import sys
+    from mirror import fetch, unpack
+    os.makedirs(sys.argv[2], exist_ok=True)
+    build(sys.argv[1], sys.argv[2], fetch, unpack)
