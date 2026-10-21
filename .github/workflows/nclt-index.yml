@@ -1,0 +1,63 @@
+name: nclt-index
+
+# One pass over a session's Ladybug archive (40-140 GB, streamed, never stored) to index where each image sits, so
+# lb3.py can later fetch images one by one in time order. Indexes (tens of MB) go to the release nclt-lb3-index.
+# Only needed once per session.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sessions:
+        description: "Sessions, space separated, or all"
+        default: "2013-01-10"
+
+permissions:
+  contents: write  # release assets
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      sessions: ${{ steps.p.outputs.sessions }}
+    steps:
+      - id: p
+        run: |
+          all="2012-01-08 2012-01-15 2012-01-22 2012-02-02 2012-02-04 2012-02-05 2012-02-12 2012-02-18 2012-02-19
+               2012-03-17 2012-03-25 2012-03-31 2012-04-29 2012-05-11 2012-05-26 2012-06-15 2012-08-04 2012-08-20
+               2012-09-28 2012-10-28 2012-11-04 2012-11-16 2012-11-17 2012-12-01 2013-01-10 2013-02-23 2013-04-05"
+          s="${{ inputs.sessions }}"; [ "$s" = all ] && s=$all
+          echo "sessions=$(echo $s | jq -Rc 'split(" ")')" >> "$GITHUB_OUTPUT"
+      - name: Release for the indexes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view nclt-lb3-index -R ${{ github.repository }} >/dev/null 2>&1 ||
+            gh release create nclt-lb3-index -R ${{ github.repository }} --title "NCLT Ladybug3 archive indexes" \
+              --notes "gzidx indexes of the NCLT lb3 archives, made by nclt-index.yml; read by lb3.py."
+
+  index:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        session: ${{ fromJson(needs.plan.outputs.sessions) }}
+    env:
+      URL: https://s3.us-east-2.amazonaws.com/nclt.perl.engin.umich.edu/images/${{ matrix.session }}_lb3.tar.gz
+      IDX: ${{ matrix.session }}_lb3.idx.gz
+    steps:
+      - uses: actions/checkout@v4
+      - run: gcc -O2 -o gzidx gzidx.c -lz
+      - name: Index
+        run: |
+          set -o pipefail
+          /usr/bin/time -f "%e s" python3 lb3.py cat "$URL" | ./gzidx | gzip -9 > "$IDX"
+          ls -la "$IDX"
+      - name: Check
+        run: python3 lb3.py check "$URL" "$IDX"
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload nclt-lb3-index "$IDX" --clobber -R ${{ github.repository }}

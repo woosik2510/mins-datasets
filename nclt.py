@@ -1,19 +1,23 @@
 """Build one NCLT session as a ROS1 bag + TUM ground truth from the raw files on the NCLT S3 bucket.
 
 The official converter (nclt2ros-era sensordata_to_rosbag.py) writes Float64MultiArray, which nothing
-reads, so this writes standard messages instead. Ladybug images (~114 GB/session) and Hokuyo are left out.
+reads, so this writes standard messages instead. Hokuyo is left out. Ladybug images are optional and
+fetched image by image from the archive (lb3.py), so the bag can be streamed into mins_bag without touching disk.
 """
-import csv, math, os, struct, subprocess
+import argparse, csv, heapq, math, os, struct, subprocess
 import lz4.frame
 import numpy as np
 import rosbags.rosbag1.writer
 from rosbags.rosbag1 import Writer
 from rosbags.typesys import Stores, get_typestore
 
+import lb3
+
 BASE = "https://s3.us-east-2.amazonaws.com/nclt.perl.engin.umich.edu"
 ts = get_typestore(Stores.ROS1_NOETIC)
 T = ts.types
 IMU, FIX, JOINT, PC2 = "sensor_msgs/msg/Imu", "sensor_msgs/msg/NavSatFix", "sensor_msgs/msg/JointState", "sensor_msgs/msg/PointCloud2"
+CIMG = "sensor_msgs/msg/CompressedImage"
 # rosbags 0.11.5 writes LZ4 frames without a content checksum, which ROS roslz4 rejects ("malformed data").
 # Use the frame settings roslz4 itself writes so rosbag play/info read the bag.
 rosbags.rosbag1.writer.lz4_compress = lambda x, level=0: lz4.frame.compress(
@@ -115,8 +119,11 @@ def gt_to_tum(src, dst):
     print(f"ground truth: {n} poses", flush=True)
 
 
-def build(seq, d, fetch, unpack):
-    """Download session seq into d and write d/<seq>.bag and d/<seq>.txt."""
+def messages(seq, d, fetch, unpack, index=None, cams=()):
+    """Yield (utime, topic, type, msg) for session seq in time order; writes d/<seq>.txt (ground truth) on the way.
+
+    Images come from the given Ladybug cameras, fetched one by one from the lb3 archive through its index (lb3.py).
+    """
     fetch(f"{BASE}/ground_truth/groundtruth_{seq}.csv", os.path.join(d, "gt.csv"))
     gt_to_tum(os.path.join(d, "gt.csv"), os.path.join(d, f"{seq}.txt"))
     fetch(f"{BASE}/sensor_data/{seq}_sen.tar.gz", os.path.join(d, "sen.tar.gz"))
@@ -131,36 +138,101 @@ def build(seq, d, fetch, unpack):
     curl = subprocess.Popen(["curl", "-fsL", f"{BASE}/velodyne_data/{seq}_vel.tar.gz"], stdout=subprocess.PIPE)
     tar = subprocess.Popen(["tar", "-xzO", "--occurrence=1", f"{seq}/velodyne_hits.bin"], stdin=curl.stdout, stdout=subprocess.PIPE, bufsize=64 << 20)
     curl.stdout.close()
-    bag, counts, k = os.path.join(d, f"{seq}.bag"), {}, 0
-    w = Writer(bag)
-    w.set_compression(Writer.CompressionFormat.LZ4)
-    with w:
-        conns = {}
-
-        def put(t, topic, kind, msg):
-            if topic not in conns:
-                conns[topic] = w.add_connection(topic, kind, typestore=ts)
-            w.write(conns[topic], t * 1000, ts.serialize_ros1(msg, kind))
-            counts[topic] = counts.get(topic, 0) + 1
-
-        # Write in time order so a reader that streams by connection index sees a consistent bag
-        for t, msg in lidar_scans(tar.stdout):
-            while k < len(small) and small[k][0] <= t:
-                put(*small[k])
-                k += 1
-            put(t, "/velodyne_points", PC2, msg)
-        for m in small[k:]:
-            put(*m)
+    streams = [small, ((t, "/velodyne_points", PC2, msg) for t, msg in lidar_scans(tar.stdout))]
+    if cams:
+        # The TIFFs are JPEG inside, which cv::imdecode reads, so they go in unchanged as CompressedImage
+        url = f"{BASE}/images/{seq}_lb3.tar.gz"
+        streams.append((t, f"/cam{c}/image/compressed", CIMG, T[CIMG](header=header(t, f"cam{c}"), format="tiff", data=np.frombuffer(b, np.uint8)))
+                       for t, c, b in lb3.images(url, lb3.load_index(index), cams))
+    # on equal times the earlier stream goes first, so the small sensors still precede a scan with the same stamp
+    yield from heapq.merge(*streams, key=lambda m: m[0])
     # curl exits 23 when tar stops reading early; that is fine as long as tar got the whole member
     if tar.wait() != 0:
         raise SystemExit("tar failed reading velodyne_hits.bin (download dropped?)")
     curl.wait()
+
+
+def build(seq, d, fetch, unpack, index=None, cams=()):
+    """Download session seq into d and write d/<seq>.bag and d/<seq>.txt."""
+    bag, counts = os.path.join(d, f"{seq}.bag"), {}
+    w = Writer(bag)
+    w.set_compression(Writer.CompressionFormat.LZ4)
+    with w:
+        conns = {}
+        for t, topic, kind, msg in messages(seq, d, fetch, unpack, index, cams):
+            if topic not in conns:
+                conns[topic] = w.add_connection(topic, kind, typestore=ts)
+            w.write(conns[topic], t * 1000, ts.serialize_ros1(msg, kind))
+            counts[topic] = counts.get(topic, 0) + 1
+    print(f"{seq}: {counts}", flush=True)
+
+
+class StreamBag:
+    """A ROS1 bag written strictly in order with no index, so it can go through a pipe into a reader that plays it as
+    it arrives (mins_bag reads an unindexed bag in file order). All connections are declared up front."""
+
+    def __init__(self, f, topics):
+        self.f, self.ids, self.buf = f, {}, bytearray()
+        head = self.fields(op=b"\x03", index_pos=struct.pack("<Q", 0), conn_count=struct.pack("<I", len(topics)), chunk_count=struct.pack("<I", 0))
+        f.write(b"#ROSBAG V2.0\n" + self.record(head, b" " * (4096 - len(head))))  # rosbag pads the header to 4 KB
+        for i, (topic, kind) in enumerate(topics.items()):
+            msgdef, md5 = ts.generate_msgdef(kind, ros_version=1)
+            f.write(self.record(self.fields(op=b"\x07", conn=struct.pack("<I", i), topic=topic.encode()),
+                                self.fields(topic=topic.encode(), type=kind.replace("/msg/", "/").encode(), md5sum=md5.encode(), message_definition=msgdef.encode())))
+            self.ids[topic] = i
+
+    @staticmethod
+    def fields(**kv):
+        return b"".join(struct.pack("<I", len(k) + 1 + len(v)) + k.encode() + b"=" + v for k, v in kv.items())
+
+    @staticmethod
+    def record(header, data):
+        return struct.pack("<I", len(header)) + header + struct.pack("<I", len(data)) + data
+
+    def write(self, utime, topic, kind, msg):
+        stamp = struct.pack("<II", utime // 1000000, utime % 1000000 * 1000)
+        self.buf += self.record(self.fields(op=b"\x02", conn=struct.pack("<I", self.ids[topic]), time=stamp), bytes(ts.serialize_ros1(msg, kind)))
+        if len(self.buf) > 8 << 20:
+            self.flush()
+
+    def flush(self):
+        if self.buf:
+            self.f.write(self.record(self.fields(op=b"\x05", compression=b"none", size=struct.pack("<I", len(self.buf))), self.buf))
+            self.f.flush()
+            self.buf = bytearray()
+
+
+def stream(seq, d, fetch, unpack, out, index=None, cams=()):
+    """Write session seq as an unindexed bag to the binary file out (e.g. a pipe into mins_bag), d/<seq>.txt as usual."""
+    topics = {"/imu": IMU, "/gps/fix": FIX, "/gps_rtk/fix": FIX, "/wheels": JOINT, "/velodyne_points": PC2,
+              **{f"/cam{c}/image/compressed": CIMG for c in cams}}
+    bag, counts = StreamBag(out, topics), {}
+    for t, topic, kind, msg in messages(seq, d, fetch, unpack, index, cams):
+        bag.write(t, topic, kind, msg)
+        counts[topic] = counts.get(topic, 0) + 1
+    bag.flush()
     print(f"{seq}: {counts}", flush=True)
 
 
 if __name__ == "__main__":
-    # Standalone, for CI that converts on the fly: python nclt.py <session> <out dir>
-    import sys
+    # Standalone, for CI that converts on the fly
     from mirror import fetch, unpack
-    os.makedirs(sys.argv[2], exist_ok=True)
-    build(sys.argv[1], sys.argv[2], fetch, unpack)
+    p = argparse.ArgumentParser()
+    p.add_argument("session")
+    p.add_argument("dir", help="working dir; gets <session>.txt (and <session>.bag unless --stream)")
+    p.add_argument("--stream", action="store_true", help="write the bag to stdout, unindexed, instead of a file")
+    p.add_argument("--index", help="gzidx index of the session's lb3 archive (needed for --cams)")
+    p.add_argument("--cams", default="", help="Ladybug cameras to include, e.g. 1,2,3,4,5 (0 looks at the sky)")
+    a = p.parse_args()
+    cams = tuple(int(c) for c in a.cams.split(",") if c)
+    if cams and not a.index:
+        p.error("--cams needs --index")
+    os.makedirs(a.dir, exist_ok=True)
+    if a.stream:
+        # stdout carries the bag; everything else that would print there (logs, child processes) goes to stderr
+        out = os.fdopen(os.dup(1), "wb")
+        os.dup2(2, 1)
+        stream(a.session, a.dir, fetch, unpack, out, a.index, cams)
+        out.close()
+    else:
+        build(a.session, a.dir, fetch, unpack, a.index, cams)

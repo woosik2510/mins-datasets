@@ -1,0 +1,84 @@
+name: nclt-stream-probe
+
+# Streams one session (sensors, lidar, Ladybug images fetched one by one) as an unindexed bag through a pipe into
+# MINS's bag reader, and measures whether that keeps up: wall time against the session's length, messages per
+# topic, play order, memory and disk. Nothing is stored. Needs the session's index from nclt-index.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seq:
+        description: "NCLT session"
+        default: "2013-01-10"
+      cams:
+        description: "Ladybug cameras (0 looks at the sky)"
+        default: "1,2,3,4,5"
+      mins_ref:
+        description: "rpng/MINS ref with the stream-capable bag reader"
+        default: "master"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      SEQ: ${{ inputs.seq }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: rpng/MINS
+          ref: ${{ inputs.mins_ref }}
+          path: MINS
+          sparse-checkout: mins/src/io
+      - run: sudo apt-get install -y -qq liblz4-dev libbz2-dev > /dev/null
+      - run: pip install -q pyyaml==6.0.3 rosbags==0.11.5 "huggingface_hub[hf_xet]==0.36.0"
+      - name: Build a bag reader on MINS's RosbagReader
+        run: |
+          cat > bagstat.cpp <<'EOF'
+          #include "RosbagReader.h"
+          #include <chrono>
+          #include <cstdio>
+          #include <map>
+          #include <sys/resource.h>
+          // Per-topic counts, messages behind the previous one in time, and how fast the bag arrived against its own clock
+          int main(int argc, char **argv) {
+            mins::RosbagReader bag(argv[1]);
+            std::map<std::string, std::uint64_t> n;
+            std::uint64_t first = 0, last = 0, back = 0;
+            auto t0 = std::chrono::steady_clock::now();
+            bag.read({}, [&](const mins::RosbagReader::Message &m) {
+              n[m.conn->topic]++;
+              back += m.time < last;
+              if (!first) first = m.time;
+              last = std::max(last, m.time);
+              return true;
+            });
+            double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), span = (last - first) * 1e-9;
+            for (auto &kv : n) printf("%s: %llu\n", kv.first.c_str(), (unsigned long long)kv.second);
+            rusage u;
+            getrusage(RUSAGE_SELF, &u);
+            printf("out of time order: %llu\nsession %.0f s, streamed in %.0f s (%.1fx real time)\nreader peak rss: %ld MB\n",
+                   (unsigned long long)back, span, wall, span / wall, u.ru_maxrss / 1024);
+            return back ? 1 : 0;
+          }
+          EOF
+          g++ -O2 -std=c++14 -DMINS_HAVE_LZ4 -DMINS_HAVE_BZ2 -IMINS/mins/src/io bagstat.cpp MINS/mins/src/io/RosbagReader.cpp -llz4 -lbz2 -o bagstat
+      - name: Index
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download nclt-lb3-index -p "${SEQ}_lb3.idx.gz" -R ${{ github.repository }}
+      - name: Stream
+        run: |
+          set -o pipefail
+          mkdir -p ~/w
+          used0=$(df --output=used -B1M ~/w | tail -1)
+          (peak=0; while true; do u=$(df --output=used -B1M ~/w | tail -1); [ "$u" -gt "$peak" ] && peak=$u && echo $((peak - used0)) > /tmp/peak; sleep 5; done) &
+          /usr/bin/time -f "converter peak rss: %M KB" python3 nclt.py "$SEQ" ~/w --stream --index "${SEQ}_lb3.idx.gz" --cams "${{ inputs.cams }}" \
+            2> >(tee conv.log | grep -v "^+" >&2) | ./bagstat /dev/stdin | tee stat.txt
+          kill %1
+          { echo "session $SEQ, cameras ${{ inputs.cams }}, $(nproc) cores"; cat stat.txt; tail -1 conv.log
+            echo "peak extra disk: $(cat /tmp/peak) MB"; } | tee -a "$GITHUB_STEP_SUMMARY"
