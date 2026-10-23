@@ -1,0 +1,98 @@
+%YAML:1.0 # need to specify the file type at the top!
+
+# Ladybug3 side cameras 1-5 (0 looks at the sky), each mono at 5 Hz on the raw 1616x1232 fisheye images.
+# Extrinsics: NCLT paper Tables 4-5 (x_body_lb3, x_lb3_c<k>) moved into the IMU frame.
+# Intrinsics: equidistant model least-squares fitted to the NCLT U2D_Cam<k> maps (max error 0.04-0.45 px).
+cam:
+  enabled: true
+  max_n: 5
+  use_stereo: false
+  do_calib_ext: false
+  do_calib_int: false
+  do_calib_dt: false
+  n_pts: 300
+  fast: 30
+  grid_x: 8
+  grid_y: 8
+  min_px_dist: 15
+  knn: 0.65
+  downsample: true
+  histogram_method: "HISTOGRAM" # NONE, HISTOGRAM, CLAHE
+  max_slam: 0
+  max_msckf: 50
+  feat_rep: "GLOBAL_FULL_INVERSE_DEPTH"
+  init_cov_dt: 1e-4
+  init_cov_ex_o: 1e-4
+  init_cov_ex_p: 1e-4
+  init_cov_in_k: 1e-2
+  init_cov_in_c: 1e-1
+  init_cov_in_r: 1e-6
+  sigma_px: 2
+  chi2_mult: 1
+
+  # feature related
+  fi_min_dist: 0.25
+  fi_max_dist: 150
+  fi_max_baseline: 2000
+  fi_max_cond_number: 10000
+
+cam0:
+  timeoffset: 0.0
+  T_imu_cam: #rotation from camera to IMU R_CtoI, position of camera in IMU p_CinI
+    - [-0.001985, -0.947946, 0.318425, 0.159887]
+    - [0.003501, -0.318431, -0.947940, 0.142792]
+    - [0.999992, -0.000767, 0.003951, -0.520388]
+    - [0.0, 0.0, 0.0, 1.0]
+  distortion_coeffs: [0.0551864, 0.0280695, -0.00900489, 0.00798934]
+  distortion_model: equidistant
+  intrinsics: [751.939, 751.904, 810.898, 621.885]
+  resolution: [1616, 1232]
+  topic: "/cam1/image/compressed"
+cam1:
+  timeoffset: 0.0
+  T_imu_cam:
+    - [-0.002431, -0.597652, -0.801752, 0.112555]
+    - [0.001128, 0.801752, -0.597655, 0.155788]
+    - [0.999996, -0.002357, -0.001275, -0.520339]
+    - [0.0, 0.0, 0.0, 1.0]
+  distortion_coeffs: [0.0559806, 0.0301779, -0.0123931, 0.0096022]
+  distortion_model: equidistant
+  intrinsics: [750.91, 751.1, 797.762, 620.452]
+  resolution: [1616, 1232]
+  topic: "/cam2/image/compressed"
+cam2:
+  timeoffset: 0.0
+  T_imu_cam:
+    - [-0.000855, 0.577229, -0.816582, 0.109832]
+    - [0.002383, 0.816581, 0.577226, 0.204687]
+    - [0.999997, -0.001452, -0.002074, -0.520142]
+    - [0.0, 0.0, 0.0, 1.0]
+  distortion_coeffs: [0.0530522, 0.031993, -0.0125842, 0.00895121]
+  distortion_model: equidistant
+  intrinsics: [749.922, 750.081, 810.478, 616.891]
+  resolution: [1616, 1232]
+  topic: "/cam3/image/compressed"
+cam3:
+  timeoffset: 0.0
+  T_imu_cam:
+    - [-0.005973, 0.955204, 0.295889, 0.155883]
+    - [-0.003873, -0.295914, 0.955207, 0.222463]
+    - [0.999975, 0.004560, 0.005467, -0.519513]
+    - [0.0, 0.0, 0.0, 1.0]
+  distortion_coeffs: [0.0556951, 0.0250129, -0.00700296, 0.00758928]
+  distortion_model: equidistant
+  intrinsics: [749.793, 750.022, 816.482, 606.721]
+  resolution: [1616, 1232]
+  topic: "/cam4/image/compressed"
+cam4:
+  timeoffset: 0.0
+  T_imu_cam:
+    - [-0.005412, 0.013074, 0.999900, 0.186843]
+    - [-0.001766, -0.999913, 0.013065, 0.184270]
+    - [0.999984, -0.001695, 0.005435, -0.519618]
+    - [0.0, 0.0, 0.0, 1.0]
+  distortion_coeffs: [0.0566943, 0.0242726, -0.00529725, 0.00667728]
+  distortion_model: equidistant
+  intrinsics: [748.36, 748.421, 824.134, 619.729]
+  resolution: [1616, 1232]
+  topic: "/cam5/image/compressed"

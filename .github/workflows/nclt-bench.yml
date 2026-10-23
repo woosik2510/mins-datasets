@@ -1,0 +1,97 @@
+name: nclt-bench
+
+# MINS accuracy on NCLT: each session is streamed from the NCLT bucket (sensors, lidar and Ladybug cameras 1-5)
+# through a pipe into one mins_bag per sensor set, and every trajectory is scored against the ground truth.
+# Nothing is stored and no mirror is needed. Camera sets need the session's index (nclt-index.yml).
+
+on:
+  workflow_dispatch:
+    inputs:
+      sessions:
+        description: "Sessions, space separated, or all"
+        default: "all"
+      sets:
+        description: "Sensor sets (I = IMU, C = cameras 1-5, G = GPS, L = lidar, W = wheels)"
+        default: "IW IGW ICW ILW ICGLW"
+      mins_ref:
+        description: "rpng/MINS ref"
+        default: "master"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      sessions: ${{ steps.p.outputs.sessions }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: p
+        run: |
+          s="${{ inputs.sessions }}"
+          [ "$s" = all ] && s=$(python3 -c "import re; print(' '.join(re.findall(r'\d{4}-\d\d-\d\d', open('datasets/nclt.yaml').read().split('seqs:')[1])))")
+          echo "sessions=$(echo $s | jq -Rc 'split(" ")')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: rpng/MINS
+          ref: ${{ inputs.mins_ref }}
+          path: MINS
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libeigen3-dev libopencv-dev libbz2-dev liblz4-dev > /dev/null
+      - run: |
+          cmake -S MINS/mins -B build -DENABLE_ROS=OFF -DENABLE_ARUCO_TAGS=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)" --target mins_bag
+          echo "rpng/MINS ${{ inputs.mins_ref }} = $(git -C MINS rev-parse --short HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mins_bag
+          path: build/mins_bag
+          retention-days: 1
+
+  run:
+    needs: build
+    name: "${{ matrix.session }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        session: ${{ fromJson(needs.build.outputs.sessions) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mins_bag
+      - run: |
+          chmod +x mins_bag
+          sudo apt-get update -qq && sudo apt-get install -y -qq libopencv-dev libbz2-dev liblz4-dev > /dev/null
+          pip install -q pyyaml==6.0.3 rosbags==0.11.5 "huggingface_hub[hf_xet]==0.36.0"
+      - name: Index
+        if: contains(inputs.sets, 'C')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download nclt-lb3-index -p "${{ matrix.session }}_lb3.idx.gz" -R ${{ github.repository }}
+      - name: MINS
+        run: ./bench.sh ./mins_bag "${{ matrix.session }}" out ${{ inputs.sets }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ matrix.session }}
+          path: |
+            out/*.txt
+            out/*.log
+            out/*.time
+            out/score.jsonl
+          retention-days: 14
+
+  report:
+    needs: run
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: results
+      - run: python3 nclt_ate.py report results | tee -a "$GITHUB_STEP_SUMMARY"

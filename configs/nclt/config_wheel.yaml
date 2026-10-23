@@ -1,0 +1,30 @@
+%YAML:1.0 # need to specify the file type at the top!
+
+# Segway wheel speeds are linear (m/s), so a Lin model; its intrinsics are [unused, unused, track width].
+# Track width 0.52 m fitted from wheel speed difference against the gyro yaw rate (2013-01-10).
+# Wheel frame: axle centre (NCLT body origin) with x forward, y left, z up.
+wheel:
+  enabled: true
+  type: "Wheel3DLin" #  Wheel2DAng, Wheel2DLin, Wheel2DCen, Wheel3DAng, Wheel3DLin, Wheel3DCen
+  sub_topics: "left, right"
+  do_calib_dt: false
+  do_calib_ext: false
+  do_calib_int: false
+  noise_w: 0.1
+  noise_v: 0.3
+  noise_p: 0.3 # the Segway pitches as it balances
+  init_cov_dt: 1e-4
+  init_cov_ex_o: 1e-4
+  init_cov_ex_p: 1e-3
+  init_cov_in_b: 1e-3
+  init_cov_in_r: 1e-3
+  chi2_mult: 15
+  timeoffset: 0.0
+  intrinsics: [1.0, 1.0, 0.52]
+  reuse_of_information: false
+  T_imu_wheel:
+    - [1.0, 0.0, 0.0, 0.11]
+    - [0.0, -1.0, 0.0, 0.18]
+    - [0.0, 0.0, -1.0, 0.71]
+    - [0.0, 0.0, 0.0, 1.0]
+  topic: "/wheels"
