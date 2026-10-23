@@ -23,6 +23,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     outputs:
       sessions: ${{ steps.p.outputs.sessions }}
     steps:
@@ -37,7 +38,7 @@ jobs:
           repository: rpng/MINS
           ref: ${{ inputs.mins_ref }}
           path: MINS
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq libeigen3-dev libopencv-dev libbz2-dev liblz4-dev > /dev/null
+      - run: sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libeigen3-dev libopencv-dev libbz2-dev liblz4-dev
       - run: |
           cmake -S MINS/mins -B build -DENABLE_ROS=OFF -DENABLE_ARUCO_TAGS=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j"$(nproc)" --target mins_bag
@@ -66,7 +67,7 @@ jobs:
           name: mins_bag
       - run: |
           chmod +x mins_bag
-          sudo apt-get update -qq && sudo apt-get install -y -qq libopencv-dev libbz2-dev liblz4-dev > /dev/null
+          sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libopencv-dev libbz2-dev liblz4-dev
           pip install -q pyyaml==6.0.3 rosbags==0.11.5 "huggingface_hub[hf_xet]==0.36.0"
       - name: Index
         if: contains(inputs.sets, 'C')
