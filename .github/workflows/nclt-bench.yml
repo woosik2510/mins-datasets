@@ -12,7 +12,9 @@ on:
         default: "all"
       sets:
         description: "Sensor sets (I = IMU, C = cameras 1-5, G = GPS, L = lidar, W = wheels)"
-        default: "IW IGW ICW ILW ICGLW"
+        # no camera+GPS set: MINS cov goes negative with cameras and GPS keyframes (before GPS init), and the
+        # slow broken run paces every set on the shared stream
+        default: "IW IGW ICW ILW ICLW"
       mins_ref:
         description: "rpng/MINS ref"
         default: "master"
