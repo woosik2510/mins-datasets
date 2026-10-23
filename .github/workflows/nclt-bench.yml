@@ -41,11 +41,12 @@ jobs:
       - run: |
           cmake -S MINS/mins -B build -DENABLE_ROS=OFF -DENABLE_ARUCO_TAGS=OFF -DCMAKE_BUILD_TYPE=Release
           cmake --build build -j"$(nproc)" --target mins_bag
+          mkdir dist && cp build/mins_bag $(find build -name "*.so") dist/
           echo "rpng/MINS ${{ inputs.mins_ref }} = $(git -C MINS rev-parse --short HEAD)" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: mins_bag
-          path: build/mins_bag
+          path: dist/
           retention-days: 1
 
   run:
@@ -73,7 +74,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download nclt-lb3-index -p "${{ matrix.session }}_lb3.idx.gz" -R ${{ github.repository }}
       - name: MINS
-        run: ./bench.sh ./mins_bag "${{ matrix.session }}" out ${{ inputs.sets }}
+        run: LD_LIBRARY_PATH=$PWD ./bench.sh ./mins_bag "${{ matrix.session }}" out ${{ inputs.sets }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -94,4 +95,5 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: results
+      - run: pip install -q numpy
       - run: python3 nclt_ate.py report results | tee -a "$GITHUB_STEP_SUMMARY"

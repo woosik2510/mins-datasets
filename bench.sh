@@ -22,7 +22,8 @@ for set in "$@"; do
     on=false; [[ $set == *${s%:*}* ]] && on=true
     sed -i "0,/enabled:/s|enabled:.*|enabled: $on|" "$cfg/config_${s#*:}.yaml"
   done
-  sinks+=(">(\"$mins\" \"$cfg/config.yaml\" /dev/stdin > \"$out/$set.log\" 2>&1; echo \$? > \"$out/$set.exit\")")
+  # set +e: the subshell inherits -e and would skip writing the exit code when mins_bag fails
+  sinks+=(">(set +e; \"$mins\" \"$cfg/config.yaml\" /dev/stdin > \"$out/$set.log\" 2>&1; echo \$? > \"$out/$set.exit\")")
 done
 
 # one stream, one mins_bag per set; tee waits for the slowest and keeps feeding the rest if one dies
