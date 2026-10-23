@@ -11,10 +11,10 @@ on:
         description: "Sessions, space separated, or all"
         default: "all"
       sets:
-        description: "Sensor sets (I = IMU, C = cameras 1-5, G = GPS, L = lidar, W = wheels)"
+        description: "Sensor sets (I = IMU, C = cameras 1-5, G = GPS, L = lidar, W = wheels); each comma group is one job per session"
         # no camera+GPS set: MINS cov goes negative with cameras and GPS keyframes (before GPS init), and the
-        # slow broken run paces every set on the shared stream
-        default: "IW IGW ICW ILW ICLW"
+        # slow broken run paces every set on the shared stream. Camera sets get their own runner (CPU bound).
+        default: "IW IGW ILW,ICW ICLW"
       mins_ref:
         description: "rpng/MINS ref"
         default: "master"
@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 60
     outputs:
       sessions: ${{ steps.p.outputs.sessions }}
+      groups: ${{ steps.p.outputs.groups }}
     steps:
       - uses: actions/checkout@v4
       - id: p
@@ -35,6 +36,7 @@ jobs:
           s="${{ inputs.sessions }}"
           [ "$s" = all ] && s=$(python3 -c "import re; print(' '.join(re.findall(r'\d{4}-\d\d-\d\d', open('datasets/nclt.yaml').read().split('seqs:')[1])))")
           echo "sessions=$(echo $s | jq -Rc 'split(" ")')" >> "$GITHUB_OUTPUT"
+          echo "groups=$(echo "${{ inputs.sets }}" | jq -Rc 'split(",")')" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: rpng/MINS
@@ -54,7 +56,7 @@ jobs:
 
   run:
     needs: build
-    name: "${{ matrix.session }}"
+    name: "${{ matrix.session }} ${{ matrix.sets }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
@@ -62,6 +64,7 @@ jobs:
       max-parallel: 20
       matrix:
         session: ${{ fromJson(needs.build.outputs.sessions) }}
+        sets: ${{ fromJson(needs.build.outputs.groups) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -72,16 +75,16 @@ jobs:
           echo http://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 update -q && sudo apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 install -y -q --no-install-recommends libopencv-dev libbz2-dev liblz4-dev
           pip install -q pyyaml==6.0.3 rosbags==0.11.5 "huggingface_hub[hf_xet]==0.36.0"
       - name: Index
-        if: contains(inputs.sets, 'C')
+        if: contains(matrix.sets, 'C')
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download nclt-lb3-index -p "${{ matrix.session }}_lb3.idx.gz" -R ${{ github.repository }}
       - name: MINS
-        run: LD_LIBRARY_PATH=$PWD ./bench.sh ./mins_bag "${{ matrix.session }}" out ${{ inputs.sets }}
+        run: LD_LIBRARY_PATH=$PWD ./bench.sh ./mins_bag "${{ matrix.session }}" out ${{ matrix.sets }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ${{ matrix.session }}
+          name: ${{ matrix.session }}_${{ strategy.job-index }}
           path: |
             out/*.txt
             out/*.log

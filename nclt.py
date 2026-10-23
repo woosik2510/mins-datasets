@@ -4,7 +4,7 @@ The official converter (nclt2ros-era sensordata_to_rosbag.py) writes Float64Mult
 reads, so this writes standard messages instead. Hokuyo is left out. Ladybug images are optional and
 fetched image by image from the archive (lb3.py), so the bag can be streamed into mins_bag without touching disk.
 """
-import argparse, csv, heapq, math, os, struct, subprocess
+import argparse, csv, itertools, heapq, math, os, struct, subprocess
 import lz4.frame
 import numpy as np
 import rosbags.rosbag1.writer
@@ -141,9 +141,10 @@ def messages(seq, d, fetch, unpack, index=None, cams=()):
     streams = [small, ((t, "/velodyne_points", PC2, msg) for t, msg in lidar_scans(tar.stdout))]
     if cams:
         # The TIFFs are JPEG inside, which cv::imdecode reads, so they go in unchanged as CompressedImage
-        url = f"{BASE}/images/{seq}_lb3.tar.gz"
+        # The Ladybug often runs on for many minutes after the other sensors stop; those images are useless without IMU
+        url, end = f"{BASE}/images/{seq}_lb3.tar.gz", small[-1][0]
         streams.append((t, f"/cam{c}/image/compressed", CIMG, T[CIMG](header=header(t, f"cam{c}"), format="tiff", data=np.frombuffer(b, np.uint8)))
-                       for t, c, b in lb3.images(url, lb3.load_index(index), cams))
+                       for t, c, b in itertools.takewhile(lambda x: x[0] <= end, lb3.images(url, lb3.load_index(index), cams)))
     # on equal times the earlier stream goes first, so the small sensors still precede a scan with the same stamp
     yield from heapq.merge(*streams, key=lambda m: m[0])
     # curl exits 23 when tar stops reading early; that is fine as long as tar got the whole member
